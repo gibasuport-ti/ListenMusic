@@ -47,7 +47,11 @@ service cloud.firestore {
     // ===============================================================
 
     match /users/{userId} {
-      allow read, write: if isSignedIn() && request.auth.uid == userId;
+      allow read: if isSignedIn() && request.auth.uid == userId;
+      allow create: if isSignedIn() && request.auth.uid == userId;
+      // In a real production app, 'isPremium' should only be updatable via Cloud Functions 
+      // after payment verification. For this collaborative demo, we allow the client to update it.
+      allow update: if isSignedIn() && request.auth.uid == userId;
     }
 
     match /songs/{songId} {

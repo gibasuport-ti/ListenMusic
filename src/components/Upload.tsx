@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from 'react';
 import { useDropzone } from 'react-dropzone';
-import { Upload as UploadIcon, Music, X, Loader2, FileAudio, CheckCircle2, HardDrive } from 'lucide-react';
+import { Upload as UploadIcon, Music, X, Loader2, FileAudio, CheckCircle2, HardDrive, Crown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { db, handleFirestoreError, OperationType } from '@/src/lib/firebase';
@@ -9,6 +9,7 @@ import { saveAudioLocal, saveMetadataLocal } from '@/src/lib/localDb';
 import { useAuth } from '@/src/hooks/useAuth';
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'motion/react';
+import { PremiumModal } from './PremiumModal';
 
 export function Upload() {
   const [files, setFiles] = useState<File[]>([]);
@@ -16,26 +17,30 @@ export function Upload() {
   const [currentFileIndex, setCurrentFileIndex] = useState(0);
   const [progress, setProgress] = useState(0);
   const [uploadStatus, setUploadStatus] = useState<string>("");
-  const { user } = useAuth();
+  const { user, isPremium } = useAuth();
+  const [isPremiumModalOpen, setIsPremiumModalOpen] = useState(false);
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
-    const validFiles = acceptedFiles.filter(f => f.size <= 500 * 1024 * 1024);
+    if (acceptedFiles.length === 0) return;
     
-    if (validFiles.length < acceptedFiles.length) {
-      toast.error("Alguns arquivos excedem o limite de 500MB.");
+    let filesToSelect = acceptedFiles.filter(f => f.size <= 500 * 1024 * 1024);
+    
+    if (!isPremium && filesToSelect.length > 1) {
+      toast.info("Apenas o primeiro arquivo foi selecionado. Adquira o Acesso Total para importar vários arquivos de uma vez.");
+      filesToSelect = [filesToSelect[0]];
     }
     
-    setFiles(prev => [...prev, ...validFiles]);
-  }, []);
+    setFiles(prev => isPremium ? [...prev, ...filesToSelect] : filesToSelect);
+  }, [isPremium]);
 
   const { getRootProps, getInputProps, isDragActive, open } = useDropzone({
     onDrop,
-    noClick: false, // Make the whole area clickable for better UX
+    noClick: false, 
     accept: { 
       'audio/*': ['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac', '.wma'],
       'video/*': ['.mp4', '.mkv', '.avi', '.webm', '.mov', '.wmv']
     },
-    multiple: true
+    multiple: isPremium
   });
 
   const handleUpload = async () => {
@@ -188,11 +193,34 @@ export function Upload() {
 
   return (
     <div className="p-4 md:p-10 max-w-4xl mx-auto">
-      <header className="mb-8 md:mb-12 text-center md:text-left">
+      <header className="mb-8 md:mb-12 text-center md:text-left relative">
         <h1 className="text-3xl md:text-4xl font-bold text-white tracking-tight mb-2">Biblioteca Local</h1>
         <p className="text-sm md:text-base text-zinc-500 font-medium leading-relaxed">
           Os arquivos são salvos diretamente no seu navegador, sem necessidade de internet para tocar.
         </p>
+
+        {!isPremium && (
+          <motion.div 
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mt-6 p-4 bg-gradient-to-r from-yellow-500/20 to-orange-500/20 border border-yellow-500/20 rounded-2xl flex flex-col md:flex-row items-center justify-between gap-4"
+          >
+            <div className="flex items-center space-x-3">
+              <Crown className="w-6 h-6 text-yellow-500" />
+              <div className="text-left">
+                <div className="text-sm font-black text-white uppercase tracking-tight">Obtenha Acesso Total</div>
+                <div className="text-xs text-zinc-400">Importe pastas inteiras e vários arquivos de uma só vez (R$ 10,00)</div>
+              </div>
+            </div>
+            <Button 
+              size="sm"
+              onClick={() => setIsPremiumModalOpen(true)}
+              className="bg-yellow-500 hover:bg-yellow-600 text-black font-bold h-9 px-6 rounded-xl"
+            >
+              Liberar Agora
+            </Button>
+          </motion.div>
+        )}
       </header>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 md:gap-10">
@@ -244,10 +272,14 @@ export function Upload() {
                             if (e.target.files) {
                               const filesArray = Array.from(e.target.files);
                               const validFiles = filesArray.filter(f => f.size <= 500 * 1024 * 1024);
-                              if (validFiles.length < filesArray.length) {
-                                toast.error("Alguns arquivos excedem o limite de 500MB.");
+                              if (validFiles.length > 0) {
+                                if (!isPremium && validFiles.length > 1) {
+                                  toast.info("Apenas o primeiro arquivo foi selecionado. Adquira o Acesso Total para importar pastas inteiras.");
+                                  setFiles([validFiles[0]]);
+                                } else {
+                                  setFiles(prev => isPremium ? [...prev, ...validFiles] : validFiles);
+                                }
                               }
-                              setFiles(prev => [...prev, ...validFiles]);
                             }
                           }}
                         />
@@ -378,6 +410,7 @@ export function Upload() {
           </div>
         </div>
       </div>
+      <PremiumModal isOpen={isPremiumModalOpen} onClose={() => setIsPremiumModalOpen(false)} />
     </div>
   );
 }

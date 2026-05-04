@@ -6,8 +6,10 @@ import { doc, setDoc, getDoc, serverTimestamp } from 'firebase/firestore';
 interface AuthContextType {
   user: User | null;
   loading: boolean;
+  isPremium: boolean;
   loginWithGoogle: () => Promise<void>;
   logout: () => Promise<void>;
+  updatePremiumStatus: (status: boolean) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -15,6 +17,7 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [isPremium, setIsPremium] = useState(false);
 
   useEffect(() => {
     // Safety timeout to prevent infinite loading
@@ -25,7 +28,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
       clearTimeout(timeoutId);
       setUser(firebaseUser);
-      setLoading(false);
 
       if (firebaseUser) {
         // Sync user data in background
@@ -41,13 +43,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 displayName: firebaseUser.displayName,
                 photoURL: firebaseUser.photoURL,
                 createdAt: serverTimestamp(),
+                isPremium: false
               });
+              setIsPremium(false);
+            } else {
+              setIsPremium(userSnap.data()?.isPremium === true);
             }
+            setLoading(false);
           } catch (error) {
             handleFirestoreError(error, OperationType.WRITE, `users/${firebaseUser.uid}`);
+            setLoading(false);
           }
         };
         syncUser();
+      } else {
+        setIsPremium(false);
+        setLoading(false);
       }
     });
 
@@ -72,8 +83,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  const updatePremiumStatus = async (status: boolean) => {
+    if (!user) return;
+    try {
+      const userRef = doc(db, 'users', user.uid);
+      await setDoc(userRef, { isPremium: status }, { merge: true });
+      setIsPremium(status);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, `users/${user.uid}`);
+    }
+  };
+
   return (
-    <AuthContext.Provider value={{ user, loading, loginWithGoogle, logout }}>
+    <AuthContext.Provider value={{ user, loading, isPremium, loginWithGoogle, logout, updatePremiumStatus }}>
       {children}
     </AuthContext.Provider>
   );
