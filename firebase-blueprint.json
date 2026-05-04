@@ -1,0 +1,45 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "User Profile",
+      "description": "Stores user account information",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Unique identifier for the user" },
+        "email": { "type": "string", "format": "email", "description": "User's email address" },
+        "displayName": { "type": "string", "description": "User's display name" },
+        "photoURL": { "type": "string", "format": "uri", "description": "URL to user's profile picture" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the account was created" }
+      },
+      "required": ["uid", "email"]
+    },
+    "Song": {
+      "title": "Song",
+      "description": "Represents a music or video track",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "description": "Title of the media" },
+        "artist": { "type": "string", "description": "Artist name" },
+        "album": { "type": "string", "description": "Album name" },
+        "audioUrl": { "type": "string", "format": "uri", "description": "URL to the media file" },
+        "coverUrl": { "type": "string", "format": "uri", "description": "URL to the cover image" },
+        "source": { "type": "string", "enum": ["local", "youtube"], "description": "Origin of the track" },
+        "type": { "type": "string", "enum": ["audio", "video"], "description": "Type of media" },
+        "mimeType": { "type": "string", "description": "Original MIME type" },
+        "uploadedBy": { "type": "string", "description": "UID of the user who uploaded the song" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the song was added" }
+      },
+      "required": ["title", "audioUrl", "uploadedBy"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User profile documents"
+    },
+    "/songs/{songId}": {
+      "schema": "Song",
+      "description": "Collection of all songs"
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "ListenMusic",
+  "description": "Um aplicativo completo estilo Spotify com upload de músicas locais, busca no YouTube, autenticação Google e interface moderna.",
+  "requestFramePermissions": ["autoplay"],
+  "majorCapabilities": ["Music Player", "YouTube Integration", "File Upload", "Google Auth"]
+}

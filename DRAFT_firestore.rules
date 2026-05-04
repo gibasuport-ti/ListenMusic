@@ -1,0 +1,90 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ===============================================================
+    // Shared Helpers
+    // ===============================================================
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // ===============================================================
+    // Entity Validators
+    // ===============================================================
+    
+    function isValidSong(data) {
+      return data.keys().hasAll(['title', 'audioUrl', 'uploadedBy', 'source', 'createdAt']) &&
+             data.title is string && data.title.size() > 0 && data.title.size() <= 256 &&
+             data.audioUrl is string && data.audioUrl.size() <= 1024 &&
+             data.uploadedBy == request.auth.uid &&
+             data.source in ['local', 'youtube'] &&
+             data.createdAt == request.time &&
+             (!('type' in data) || data.type in ['audio', 'video']) &&
+             (!('mimeType' in data) || (data.mimeType is string && data.mimeType.size() <= 128)) &&
+             (!('coverUrl' in data) || (data.coverUrl is string && data.coverUrl.size() <= 1024));
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'email']) &&
+             data.uid == request.auth.uid &&
+             data.email is string && data.email.size() <= 256;
+    }
+
+    // ===============================================================
+    // Rules per Collection
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read, write: if isOwner(userId) && isValidUser(incoming());
+    }
+
+    match /songs/{songId} {
+      // Query Enforcer: Must only list own songs
+      allow list: if isSignedIn() && resource.data.uploadedBy == request.auth.uid;
+      
+      // Get single: Must be owner
+      allow get: if isSignedIn() && resource.data.uploadedBy == request.auth.uid;
+
+      allow create: if isSignedIn() && 
+                      isValidSong(incoming()) && 
+                      isValidId(songId);
+
+      allow update: if isSignedIn() && 
+                      resource.data.uploadedBy == request.auth.uid &&
+                      isValidSong(incoming()) &&
+                      incoming().uploadedBy == existing().uploadedBy &&
+                      incoming().createdAt == existing().createdAt &&
+                      incoming().diff(existing()).affectedKeys().hasOnly(['title', 'artist', 'coverUrl', 'mimeType', 'type']);
+
+      allow delete: if isSignedIn() && 
+                      resource.data.uploadedBy == request.auth.uid;
+    }
+
+    // Legacy support for playlists if needed, but keeping it secure
+    match /playlists/{playlistId} {
+      allow read, write: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+    }
+  }
+}
