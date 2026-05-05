@@ -15,13 +15,16 @@ export function PremiumModal({ isOpen, onClose }: PremiumModalProps) {
   const [loading, setLoading] = useState(false);
 
   const handlePayment = async () => {
-    const paymentUrl = import.meta.env.VITE_PAYMENT_URL;
+    // Priority to the environment variable, fallback to the direct link
+    const paymentUrl = import.meta.env.VITE_PAYMENT_URL || 'https://mpago.la/1brXcKy';
     
     if (paymentUrl && paymentUrl !== 'https://link.mercadopago.com.br/...') {
       window.open(paymentUrl, '_blank');
-      toast.success("Link de pagamento aberto em nova aba!");
+      toast.success("Link de contribuição aberto! Agradecemos seu apoio.");
     } else {
-      toast.error("Configuração de pagamento pendente. O administrador precisa configurar o link de pagamento.");
+      // Fallback direct link just in case
+      window.open('https://mpago.la/1brXcKy', '_blank');
+      toast.success("Link de contribuição aberto!");
     }
   };
 
@@ -69,7 +72,7 @@ export function PremiumModal({ isOpen, onClose }: PremiumModalProps) {
               </button>
             </div>
 
-            <div className="p-8 md:p-12">
+            <div className="p-6 md:p-10">
               <div className="flex justify-center mb-6">
                 <div className="w-20 h-20 bg-yellow-500/20 rounded-2xl flex items-center justify-center border border-yellow-500/20 shadow-[0_0_30px_rgba(234,179,8,0.2)]">
                   <Crown className="w-10 h-10 text-yellow-500" />
@@ -102,30 +105,30 @@ export function PremiumModal({ isOpen, onClose }: PremiumModalProps) {
                   <Crown className="w-24 h-24 text-yellow-500" />
                 </div>
                 <div className="text-[10px] text-yellow-500 font-black uppercase tracking-[0.2em] mb-1">Contribuição Única</div>
-                <div className="text-5xl font-black text-white italic tracking-tighter">R$ 10,00</div>
+                <div className="text-3xl font-black text-white italic tracking-tighter">R$ 10,00</div>
                 <div className="text-[10px] text-zinc-500 mt-2 font-bold">PAGAMENTO ÚNICO • SEM ASSINATURA</div>
               </div>
 
               <div className="grid grid-cols-1 gap-3">
                 <Button 
                   onClick={handlePayment}
-                  className="w-full bg-blue-600 hover:bg-blue-700 text-white font-black py-7 rounded-xl text-lg shadow-xl shadow-blue-600/10 transition-all active:scale-[0.98] flex items-center justify-center space-x-2"
+                  className="w-full bg-blue-600 hover:bg-blue-700 text-white font-black py-4 px-6 rounded-xl text-base shadow-xl shadow-blue-600/10 transition-all active:scale-[0.98] flex items-center justify-center gap-2 whitespace-normal h-auto min-h-[56px] leading-tight"
                 >
-                  <Zap className="w-5 h-5 fill-current" />
-                  <span>Ir para o Mercado Pago</span>
+                  <Zap className="w-5 h-5 fill-current shrink-0 shadow-[0_0_10px_rgba(255,255,255,0.3)]" />
+                  <span className="text-center">Ir para o Mercado Pago</span>
                 </Button>
                 
                 <Button 
                   onClick={handleManualActivation}
                   disabled={loading}
                   variant="outline"
-                  className="w-full border-zinc-700 hover:border-zinc-500 text-zinc-400 hover:text-white font-bold py-6 rounded-xl text-sm transition-all bg-transparent"
+                  className="w-full border-zinc-700 hover:border-zinc-500 text-zinc-400 hover:text-white font-bold py-4 rounded-xl text-sm transition-all bg-transparent"
                 >
                   {loading ? "Verificando..." : "Já paguei, ativar acesso"}
                 </Button>
               </div>
               
-              <p className="text-[10px] text-zinc-600 text-center mt-6 uppercase tracking-widest font-black italic">
+              <p className="text-[10px] text-zinc-600 text-center mt-4 uppercase tracking-widest font-black italic">
                 Agradecemos sua colaboração!
               </p>
             </div>
