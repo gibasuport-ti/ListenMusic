@@ -94,7 +94,7 @@ export default function App() {
           
           <main className="flex-1 overflow-hidden relative">
             <ScrollArea className="h-full">
-              <div className="max-w-[1600px] mx-auto pb-32 md:pb-0">
+              <div className="max-w-[1600px] mx-auto pb-48 md:pb-32">
                 {activeTab === 'home' && <Home songs={songs} onPlay={handlePlay} />}
                 {activeTab === 'library' && <Library onPlay={handlePlay} currentSong={currentSong} />}
                 {activeTab === 'upload' && <Upload />}

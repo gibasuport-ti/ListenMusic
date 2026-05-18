@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Play, Pause, SkipBack, SkipForward, Repeat, Shuffle, Volume2, Maximize2, ListMusic, Heart, HardDrive, Monitor, Video, Music as MusicIcon, X, SlidersHorizontal, Settings2 } from 'lucide-react';
+import { Play, Pause, SkipBack, SkipForward, Repeat, Shuffle, Volume2, Maximize2, ListMusic, Heart, HardDrive, Monitor, Video, Music as MusicIcon, X, SlidersHorizontal, Settings2, Minimize2, Zap, Waves, Activity, CircleDot, BarChart3, Layers } from 'lucide-react';
 import { Slider } from '@/components/ui/slider';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -7,6 +7,7 @@ import { toast } from 'sonner';
 import { cn } from '@/src/lib/utils';
 import { getAudioLocal } from '@/src/lib/localDb';
 import { LocalImage } from './LocalImage';
+import { Visualizer, type VisualizerStyle } from './Visualizer';
 
 interface Song {
   id: string;
@@ -37,13 +38,17 @@ export function Player({ currentSong, isPlaying, setIsPlaying, onNext, onPreviou
   const [eqGains, setEqGains] = useState<number[]>([0, 0, 0, 0, 0, 0, 0]);
   const [preampGain, setPreampGain] = useState(0); // in dB
   const [isEqEnabled, setIsEqEnabled] = useState(true);
+  const [activeUrl, setActiveUrl] = useState<string | null>(null);
   const [audioReady, setAudioReady] = useState(false);
+  const [visStyle, setVisStyle] = useState<VisualizerStyle>('spectrum');
+  const [isFullscreenVis, setIsFullscreenVis] = useState(false);
   const mediaRef = useRef<HTMLVideoElement>(null);
   const blobUrlRef = useRef<string | null>(null);
 
   // Audio Context Ref
   const audioContextRef = useRef<AudioContext | null>(null);
   const sourceNodeRef = useRef<MediaElementAudioSourceNode | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
   const filtersRef = useRef<BiquadFilterNode[]>([]);
   const gainNodeRef = useRef<GainNode | null>(null);
   const masterVolumeRef = useRef<GainNode | null>(null);
@@ -75,6 +80,11 @@ export function Player({ currentSong, isPlaying, setIsPlaying, onNext, onPreviou
       const source = ctx.createMediaElementSource(media);
       sourceNodeRef.current = source;
 
+      // Analyser for visualizer
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 256;
+      analyserRef.current = analyser;
+
       // gainNodeRef (Preamp/Amplifier)
       const preamp = ctx.createGain();
       const initialMultiplier = Math.pow(10, preampGain / 15); // Slightly more aggressive curve
@@ -93,8 +103,9 @@ export function Player({ currentSong, isPlaying, setIsPlaying, onNext, onPreviou
       });
       filtersRef.current = filters;
 
-      // Build chain: Source -> Preamp -> EQ Banks -> Master Volume -> Destination
-      source.connect(preamp);
+      // Build chain: Source -> Analyser -> Preamp -> EQ Banks -> Master Volume -> Destination
+      source.connect(analyser);
+      analyser.connect(preamp);
       let lastNode: AudioNode = preamp;
       filters.forEach(filter => {
         lastNode.connect(filter);
@@ -176,16 +187,14 @@ export function Player({ currentSong, isPlaying, setIsPlaying, onNext, onPreviou
   }, []);
 
   useEffect(() => {
-    const media = mediaRef.current;
-    if (!media || !currentSong) return;
+    if (!currentSong) {
+      setActiveUrl(null);
+      return;
+    }
 
-    const playMedia = async () => {
+    const resolveUrl = async () => {
       try {
-        setErrorStatus(null);
-        
         let finalUrl = currentSong.audioUrl;
-
-        // Resolve local URL if needed
         if (finalUrl.startsWith('local://')) {
           const localId = finalUrl.replace('local://', '');
           const blob = await getAudioLocal(localId);
@@ -195,38 +204,57 @@ export function Player({ currentSong, isPlaying, setIsPlaying, onNext, onPreviou
             blobUrlRef.current = blobUrl;
             finalUrl = blobUrl;
           } else {
-            setIsPlaying(false);
-            toast.error(`Arquivo não encontrado.`);
             setErrorStatus("Arquivo perdido");
+            toast.error("Arquivo local não encontrado.");
+            setIsPlaying(false);
             return;
           }
         }
+        setActiveUrl(finalUrl);
+        setErrorStatus(null);
+      } catch (err) {
+        console.error("Error resolving URL:", err);
+        setErrorStatus("Erro ao carregar");
+      }
+    };
 
-        if (media.src !== finalUrl) {
+    resolveUrl();
+  }, [currentSong?.id]);
+
+  useEffect(() => {
+    const media = mediaRef.current;
+    if (!media || !activeUrl) return;
+
+    const syncPlayback = async () => {
+      try {
+        if (media.src !== activeUrl) {
           media.pause();
-          media.src = finalUrl;
+          media.src = activeUrl;
           media.load();
         }
-        
+
         if (isPlaying) {
-          await media.play();
+          if (media.paused) {
+            await media.play();
+          }
         } else {
-          media.pause();
+          if (!media.paused) {
+            media.pause();
+          }
         }
       } catch (err: any) {
         if (err.name === 'NotAllowedError') {
-          setErrorStatus("Clique no Play");
+          setErrorStatus("Clique para tocar");
         } else if (err.name !== 'AbortError') {
-          console.error("Player Error:", err);
-          setErrorStatus(err.message || err.name);
-          toast.error("Erro ao reproduzir arquivo.");
+          console.error("Playback Sync Error:", err);
+          setErrorStatus("Erro no Player");
         }
         setIsPlaying(false);
       }
     };
 
-    playMedia();
-  }, [currentSong, isPlaying]);
+    syncPlayback();
+  }, [activeUrl, isPlaying]);
 
   useEffect(() => {
     if (filtersRef.current.length > 0 && audioContextRef.current) {
@@ -321,6 +349,81 @@ export function Player({ currentSong, isPlaying, setIsPlaying, onNext, onPreviou
   };
   return (
     <>
+      {/* Fullscreen Visualizer Overlay */}
+      <div className={cn(
+        "fixed inset-0 z-[100] bg-black/95 transition-all duration-500 flex flex-col items-center justify-center p-8",
+        isFullscreenVis ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none scale-110"
+      )}>
+        <div className="absolute top-8 right-8 z-[110] flex items-center space-x-4">
+          <div className="flex items-center space-x-2 bg-white/5 p-1 rounded-full border border-white/10 backdrop-blur-md">
+            {[
+              { id: 'spectrum', icon: Activity, label: 'Espectro' },
+              { id: 'lightning', icon: Zap, label: 'Raio' },
+              { id: 'wave', icon: Waves, label: 'Onda' },
+              { id: 'circles', icon: CircleDot, label: 'Círculos' },
+              { id: 'bars', icon: BarChart3, label: 'Barras' },
+              { id: 'particles', icon: Layers, label: 'Partículas' }
+            ].map((s) => (
+              <Button
+                key={s.id}
+                variant="ghost"
+                size="icon"
+                onClick={() => setVisStyle(s.id as VisualizerStyle)}
+                className={cn(
+                  "w-10 h-10 rounded-full transition-all",
+                  visStyle === s.id ? "bg-blue-500 text-white shadow-[0_0_15px_rgba(59,130,246,0.5)]" : "text-zinc-400 hover:text-white"
+                )}
+                title={s.label}
+              >
+                <s.icon className="w-5 h-5" />
+              </Button>
+            ))}
+          </div>
+          <Button 
+            variant="ghost" 
+            size="icon" 
+            onClick={() => setIsFullscreenVis(false)}
+            className="w-12 h-12 bg-white/10 hover:bg-white/20 text-white rounded-full border border-white/20"
+          >
+            <X className="w-6 h-6" />
+          </Button>
+        </div>
+
+        <div className="w-full h-full max-w-6xl mx-auto flex flex-col items-center justify-center space-y-12">
+          <div className="w-full h-96 relative">
+             <Visualizer 
+                analyser={analyserRef.current} 
+                isPlaying={isPlaying} 
+                style={visStyle}
+                className="opacity-100 w-full h-full drop-shadow-[0_0_30px_rgba(59,130,246,0.4)]" 
+              />
+          </div>
+
+          <div className="text-center space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-700">
+            <h2 className="text-4xl font-black text-white tracking-tighter uppercase">{currentSong?.title}</h2>
+            <p className="text-xl text-zinc-400 font-medium">{currentSong?.artist}</p>
+          </div>
+
+          <div className="flex items-center space-x-12 pt-8">
+            <Button variant="ghost" size="icon" onClick={onPrevious} className="text-white hover:bg-white/10 transition-all hover:scale-110 w-16 h-16 rounded-full border border-white/5">
+              <SkipBack className="w-8 h-8 fill-current" />
+            </Button>
+            <Button 
+              onClick={() => {
+                initAudio();
+                setIsPlaying(!isPlaying);
+              }}
+              className="w-24 h-24 rounded-full bg-white text-black flex items-center justify-center shadow-[0_0_30px_rgba(255,255,255,0.3)] transition-all hover:scale-110 active:scale-95"
+            >
+              {isPlaying ? <Pause className="w-10 h-10 fill-current" /> : <Play className="w-10 h-10 fill-current ml-2" />}
+            </Button>
+            <Button variant="ghost" size="icon" onClick={onNext} className="text-white hover:bg-white/10 transition-all hover:scale-110 w-16 h-16 rounded-full border border-white/5">
+              <SkipForward className="w-8 h-8 fill-current" />
+            </Button>
+          </div>
+        </div>
+      </div>
+
       <div className={cn(
         "fixed bottom-[164px] right-4 md:bottom-28 md:right-8 w-64 md:w-96 aspect-video bg-black rounded-2xl overflow-hidden shadow-2xl border border-white/10 z-50 transition-all duration-500 group/video",
         (isVideo && showVideo) ? "scale-100 opacity-100 translate-y-0" : "scale-75 opacity-0 translate-y-20 pointer-events-none"
@@ -388,7 +491,51 @@ export function Player({ currentSong, isPlaying, setIsPlaying, onNext, onPreviou
       </div>
 
       {currentSong && (
-        <div className="fixed bottom-[74px] md:relative md:bottom-0 left-0 right-0 h-20 md:h-28 bg-black/90 md:bg-black/80 backdrop-blur-3xl border-t border-white/5 px-4 md:px-6 flex items-center justify-between z-40 overflow-hidden shadow-[0_-20px_50px_rgba(0,0,0,0.5)]">
+        <div className="fixed bottom-[74px] md:relative md:bottom-0 left-0 right-0 flex flex-col z-40">
+          {/* Sound Visualizer - Dedicated Space between list and player */}
+          <div className="h-10 md:h-14 bg-black/60 backdrop-blur-xl border-t border-white/5 flex items-center justify-center overflow-hidden relative group/vis">
+            <Visualizer 
+              analyser={analyserRef.current} 
+              isPlaying={isPlaying} 
+              style={visStyle}
+              className="opacity-90 max-w-4xl mx-auto drop-shadow-[0_0_15px_rgba(59,130,246,0.2)]" 
+            />
+            
+            <div className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center space-x-2 opacity-0 group-hover/vis:opacity-100 transition-opacity">
+              <div className="flex items-center bg-black/40 rounded-full border border-white/10 p-0.5">
+                {[
+                  { id: 'spectrum', icon: Activity },
+                  { id: 'lightning', icon: Zap },
+                  { id: 'wave', icon: Waves },
+                  { id: 'circles', icon: CircleDot }
+                ].map((s) => (
+                  <Button
+                    key={s.id}
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => setVisStyle(s.id as VisualizerStyle)}
+                    className={cn(
+                      "w-6 h-6 p-0 rounded-full",
+                      visStyle === s.id ? "text-blue-400 bg-white/5" : "text-zinc-500"
+                    )}
+                  >
+                    <s.icon className="w-3.5 h-3.5" />
+                  </Button>
+                ))}
+              </div>
+              <Button 
+                variant="ghost" 
+                size="icon" 
+                onClick={() => setIsFullscreenVis(true)}
+                className="w-8 h-8 rounded-full text-zinc-500 hover:text-white"
+              >
+                <Maximize2 className="w-4 h-4" />
+              </Button>
+            </div>
+          </div>
+
+          {/* Player controls bar */}
+          <div className="relative h-20 md:h-28 bg-black/90 md:bg-black/80 backdrop-blur-3xl border-t border-white/5 px-4 md:px-6 flex items-center justify-between shadow-[0_-20px_50px_rgba(0,0,0,0.5)]">
           {/* Progress Bar (Top) - Enhanced for touch/drag */}
           <div className="absolute top-0 left-0 right-0 h-1.5 z-50">
             <Slider 
@@ -407,9 +554,20 @@ export function Player({ currentSong, isPlaying, setIsPlaying, onNext, onPreviou
             </div>
           </div>
 
-          {/* Song Info */}
-          <div className="flex items-center space-x-3 md:space-x-4 w-auto md:w-1/4 min-w-0 md:min-w-[240px]">
-            <div className="relative group flex-shrink-0">
+          {/* Song Info - Clickable to toggle play */}
+          <div 
+            onClick={() => {
+              if (isPlaying) {
+                setIsPlaying(false);
+              } else {
+                initAudio();
+                setIsPlaying(true);
+              }
+            }}
+            className="flex items-center space-x-3 md:space-x-4 w-auto md:w-1/4 min-w-0 md:min-w-[240px] cursor-pointer group hover:bg-white/5 active:scale-95 transition-all p-2 rounded-xl"
+            title={isPlaying ? "Pausar" : "Reproduzir"}
+          >
+            <div className="relative flex-shrink-0">
               <LocalImage 
                 src={currentSong.coverUrl || undefined} 
                 className="w-12 h-12 md:w-16 md:h-16 rounded-lg md:rounded-xl shadow-2xl object-cover border border-white/10" 
@@ -419,6 +577,9 @@ export function Player({ currentSong, isPlaying, setIsPlaying, onNext, onPreviou
                   </div>
                 }
               />
+              <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center rounded-lg md:rounded-xl">
+                {isPlaying ? <Pause className="w-6 h-6 text-white fill-current" /> : <Play className="w-6 h-6 text-white fill-current ml-1" />}
+              </div>
             </div>
             <div className="flex flex-col truncate pr-2">
               <div className="flex items-center space-x-2 truncate">
@@ -479,13 +640,7 @@ export function Player({ currentSong, isPlaying, setIsPlaying, onNext, onPreviou
               <Button 
                 onClick={() => {
                   initAudio();
-                  if (isPlaying) {
-                    mediaRef.current?.pause();
-                    setIsPlaying(false);
-                  } else {
-                    mediaRef.current?.play().catch(() => {});
-                    setIsPlaying(true);
-                  }
+                  setIsPlaying(!isPlaying);
                 }}
                 className="w-10 h-10 md:w-12 md:h-12 rounded-full bg-white hover:bg-white/90 text-black flex items-center justify-center shadow-2xl transition-all hover:scale-110 active:scale-90"
               >
@@ -647,7 +802,8 @@ export function Player({ currentSong, isPlaying, setIsPlaying, onNext, onPreviou
             </div>
           </div>
         </div>
-      )}
+      </div>
+    )}
     </>
   );
 }
