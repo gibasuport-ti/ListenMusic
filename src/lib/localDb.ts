@@ -1,4 +1,5 @@
 import { openDB, IDBPDatabase } from 'idb';
+import { getCleanNoAdYouTubeUrl } from './youtubeUtils';
 
 const DB_NAME = 'spotify-clone-local-storage';
 const STORE_NAME = 'audio-files';
@@ -39,7 +40,21 @@ export async function saveMetadataLocal(metadata: any): Promise<void> {
 
 export async function getAllMetadataLocal(): Promise<any[]> {
   const db = await getLocalDB();
-  return db.getAll(METADATA_STORE);
+  const items = await db.getAll(METADATA_STORE);
+  
+  // Automatically sanitize stored YouTube URLs to privacy-enhanced no-ad nocookie embeds
+  for (const item of items) {
+    if (item.source === 'youtube' || (item.audioUrl && (item.audioUrl.includes('youtube.com') || item.audioUrl.includes('youtu.be')))) {
+      const clean = getCleanNoAdYouTubeUrl(item.audioUrl);
+      if (clean !== item.audioUrl) {
+        item.audioUrl = clean;
+        item.noAds = true;
+        await db.put(METADATA_STORE, item).catch(() => {});
+      }
+    }
+  }
+  
+  return items;
 }
 
 export async function deleteMediaLocal(id: string): Promise<void> {

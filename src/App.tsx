@@ -5,7 +5,9 @@ import { Sidebar } from '@/src/components/Sidebar';
 import { Player } from '@/src/components/Player';
 import { Home } from '@/src/components/Home';
 import { Library } from '@/src/components/Library';
+import { DJMixer } from '@/src/components/DJMixer';
 import { Upload } from '@/src/components/Upload';
+import { YouTubeImport } from '@/src/components/YouTubeImport';
 import { MobileNav } from '@/src/components/MobileNav';
 import { ErrorBoundary } from '@/src/components/ErrorBoundary';
 import { Toaster } from '@/components/ui/sonner';
@@ -64,6 +66,13 @@ export default function App() {
     setIsPlaying(true);
   };
 
+  const handleTabChange = (tab: string) => {
+    setActiveTab(tab);
+    if (tab === 'mixer' && isPlaying) {
+      setIsPlaying(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-[#0a0a0a] text-white">
@@ -89,14 +98,16 @@ export default function App() {
           <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-purple-600/10 blur-[120px] rounded-full" />
         </div>
 
-        <div className="flex flex-1 overflow-hidden z-10 relative flex-col md:flex-row">
-          <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} className="hidden md:flex" />
+        <div id="main-content-layout" className="flex flex-1 overflow-hidden z-10 relative flex-col md:flex-row">
+          <Sidebar id="main-sidebar" activeTab={activeTab} setActiveTab={handleTabChange} className="hidden md:flex" />
           
-          <main className="flex-1 overflow-hidden relative">
-            <ScrollArea className="h-full">
-              <div className="max-w-[1600px] mx-auto pb-48 md:pb-32">
+          <main id="main-content-area" className="flex-1 overflow-hidden relative">
+            <ScrollArea id="main-scroll-area" className="h-full">
+              <div id="content-container" className="max-w-[1600px] mx-auto pb-48 md:pb-32">
                 {activeTab === 'home' && <Home songs={songs} onPlay={handlePlay} />}
                 {activeTab === 'library' && <Library onPlay={handlePlay} currentSong={currentSong} />}
+                {activeTab === 'mixer' && <DJMixer />}
+                {activeTab === 'youtube' && <YouTubeImport />}
                 {activeTab === 'upload' && <Upload />}
                 {activeTab === 'liked' && (
                   <div className="p-12 text-center">
@@ -112,15 +123,16 @@ export default function App() {
           </main>
         </div>
 
-        <div className="z-20">
+        <div id="player-controls-container" className="z-20">
           <Player 
+            id="audio-player"
             currentSong={currentSong} 
             isPlaying={isPlaying} 
             setIsPlaying={setIsPlaying}
             onNext={handleNext}
             onPrevious={handlePrevious}
           />
-          <MobileNav activeTab={activeTab} setActiveTab={setActiveTab} />
+          <MobileNav id="mobile-navigation" activeTab={activeTab} setActiveTab={handleTabChange} />
         </div>
         
         <Toaster theme="dark" position="top-center" />

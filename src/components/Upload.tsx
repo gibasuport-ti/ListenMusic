@@ -253,13 +253,19 @@ export function Upload() {
                   
                   <div className="flex flex-col sm:flex-row gap-3 md:gap-4 mt-8 w-full sm:w-auto">
                     <Button 
-                      onClick={open}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        open();
+                      }}
                       className="bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold px-6 py-4 h-auto w-full sm:w-auto"
                     >
                       Selecionar Arquivos
                     </Button>
                     <div className="w-full sm:w-auto">
-                      <label className="bg-white/5 hover:bg-white/10 text-white rounded-xl font-bold px-6 py-4 h-auto cursor-pointer border border-white/10 flex items-center justify-center gap-2 w-full sm:w-auto">
+                      <label 
+                        onClick={(e) => e.stopPropagation()}
+                        className="bg-white/5 hover:bg-white/10 text-white rounded-xl font-bold px-6 py-4 h-auto cursor-pointer border border-white/10 flex items-center justify-center gap-2 w-full sm:w-auto"
+                      >
                         <HardDrive className="w-4 h-4" />
                         Pasta
                         <input

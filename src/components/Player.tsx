@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Play, Pause, SkipBack, SkipForward, Repeat, Shuffle, Volume2, Maximize2, ListMusic, Heart, HardDrive, Monitor, Video, Music as MusicIcon, X, SlidersHorizontal, Settings2, Minimize2, Zap, Waves, Activity, CircleDot, BarChart3, Layers } from 'lucide-react';
+import { Play, Pause, SkipBack, SkipForward, Repeat, Shuffle, Volume2, Maximize2, ListMusic, Heart, HardDrive, Monitor, Video, Music as MusicIcon, X, SlidersHorizontal, Settings2, Minimize2, Zap, Waves, Activity, CircleDot, BarChart3, Layers, ShieldCheck } from 'lucide-react';
 import { Slider } from '@/components/ui/slider';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -8,6 +8,8 @@ import { cn } from '@/src/lib/utils';
 import { getAudioLocal } from '@/src/lib/localDb';
 import { LocalImage } from './LocalImage';
 import { Visualizer, type VisualizerStyle } from './Visualizer';
+import ReactPlayer from 'react-player';
+import { getCleanNoAdYouTubeUrl } from '@/src/lib/youtubeUtils';
 
 interface Song {
   id: string;
@@ -15,7 +17,7 @@ interface Song {
   artist: string;
   coverUrl: string;
   audioUrl: string;
-  source: 'local';
+  source: 'local' | 'youtube';
   type?: 'audio' | 'video';
 }
 
@@ -25,9 +27,10 @@ interface PlayerProps {
   setIsPlaying: (playing: boolean) => void;
   onNext: () => void;
   onPrevious: () => void;
+  id?: string;
 }
 
-export function Player({ currentSong, isPlaying, setIsPlaying, onNext, onPrevious }: PlayerProps) {
+export function Player({ currentSong, isPlaying, setIsPlaying, onNext, onPrevious, id }: PlayerProps) {
   const [volume, setVolume] = useState(0.5);
   const [played, setPlayed] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -35,7 +38,7 @@ export function Player({ currentSong, isPlaying, setIsPlaying, onNext, onPreviou
   const [isSeeking, setIsSeeking] = useState(false);
   const [showVideo, setShowVideo] = useState(false);
   const [errorStatus, setErrorStatus] = useState<string | null>(null);
-  const [eqGains, setEqGains] = useState<number[]>([0, 0, 0, 0, 0, 0, 0]);
+  const [eqGains, setEqGains] = useState<number[]>(new Array(10).fill(0));
   const [preampGain, setPreampGain] = useState(0); // in dB
   const [isEqEnabled, setIsEqEnabled] = useState(true);
   const [activeUrl, setActiveUrl] = useState<string | null>(null);
@@ -43,6 +46,8 @@ export function Player({ currentSong, isPlaying, setIsPlaying, onNext, onPreviou
   const [visStyle, setVisStyle] = useState<VisualizerStyle>('spectrum');
   const [isFullscreenVis, setIsFullscreenVis] = useState(false);
   const mediaRef = useRef<HTMLVideoElement>(null);
+  const playerRef = useRef<ReactPlayer>(null);
+  const videoContainerRef = useRef<HTMLDivElement>(null);
   const blobUrlRef = useRef<string | null>(null);
 
   // Audio Context Ref
@@ -52,14 +57,22 @@ export function Player({ currentSong, isPlaying, setIsPlaying, onNext, onPreviou
   const filtersRef = useRef<BiquadFilterNode[]>([]);
   const gainNodeRef = useRef<GainNode | null>(null);
   const masterVolumeRef = useRef<GainNode | null>(null);
+  const limiterRef = useRef<DynamicsCompressorNode | null>(null);
 
-  const EQ_FREQUENCIES = [60, 170, 400, 1000, 3000, 6000, 12000];
+  const EQ_FREQUENCIES = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
 
   // Robust type detection
   const isVideo = currentSong?.type === 'video';
+  const isYouTube = currentSong?.source === 'youtube';
 
   // Initialize Audio Context on user interaction/play
   const initAudio = () => {
+    if (isYouTube) {
+      if (audioContextRef.current?.state === 'suspended') {
+        audioContextRef.current.resume().catch(() => {});
+      }
+      return; 
+    }
     const media = mediaRef.current;
     if (!media) return;
 
@@ -94,16 +107,37 @@ export function Player({ currentSong, isPlaying, setIsPlaying, onNext, onPreviou
       // EQ Filters
       const filters = EQ_FREQUENCIES.map((freq, i) => {
         const filter = ctx.createBiquadFilter();
-        filter.type = i === 0 ? 'lowshelf' : i === EQ_FREQUENCIES.length - 1 ? 'highshelf' : 'peaking';
+        if (i === 0) {
+          filter.type = 'lowshelf';
+        } else if (i === EQ_FREQUENCIES.length - 1) {
+          filter.type = 'highshelf';
+        } else {
+          filter.type = 'peaking';
+          filter.Q.value = 1.4; // Slightly narrower for 10-band precision
+        }
         filter.frequency.value = freq;
-        filter.Q.value = 1;
         const gainVal = isEqEnabled ? eqGains[i] : 0;
         filter.gain.value = Number.isFinite(gainVal) ? gainVal : 0;
         return filter;
       });
       filtersRef.current = filters;
 
-      // Build chain: Source -> Analyser -> Preamp -> EQ Banks -> Master Volume -> Destination
+      // Master Volume
+      const masterVolume = ctx.createGain();
+      const initialVol = isMuted ? 0 : volume;
+      masterVolume.gain.value = Number.isFinite(initialVol) ? initialVol : 0.5;
+      masterVolumeRef.current = masterVolume;
+
+      // Limiter for Quality and Safety (Maximum Power without clipping)
+      const limiter = ctx.createDynamicsCompressor();
+      limiter.threshold.value = -0.5;
+      limiter.knee.value = 40;
+      limiter.ratio.value = 12;
+      limiter.attack.value = 0;
+      limiter.release.value = 0.25;
+      limiterRef.current = limiter;
+
+      // Build chain: Source -> Analyser -> Preamp -> EQ Banks -> Master Volume -> Limiter -> Destination
       source.connect(analyser);
       analyser.connect(preamp);
       let lastNode: AudioNode = preamp;
@@ -112,14 +146,9 @@ export function Player({ currentSong, isPlaying, setIsPlaying, onNext, onPreviou
         lastNode = filter;
       });
 
-      // Master Volume
-      const masterVolume = ctx.createGain();
-      const initialVol = isMuted ? 0 : volume;
-      masterVolume.gain.value = Number.isFinite(initialVol) ? initialVol : 0.5;
-      masterVolumeRef.current = masterVolume;
-
       lastNode.connect(masterVolume);
-      masterVolume.connect(ctx.destination);
+      masterVolume.connect(limiter);
+      limiter.connect(ctx.destination);
 
       setAudioReady(true);
       if (ctx.state === 'suspended') {
@@ -132,17 +161,23 @@ export function Player({ currentSong, isPlaying, setIsPlaying, onNext, onPreviou
   };
 
   useEffect(() => {
-    if (isVideo && !showVideo && isPlaying) {
+    if ((isVideo || isYouTube) && !showVideo && isPlaying) {
       setShowVideo(true);
     }
-  }, [isVideo, isPlaying]);
+  }, [isVideo, isYouTube, isPlaying]);
 
   useEffect(() => {
     const media = mediaRef.current;
-    if (!media) return;
     
     const targetVol = isMuted ? 0 : volume;
     
+    if (isYouTube) {
+      // ReactPlayer handles its own volume
+      return;
+    }
+
+    if (!media) return;
+
     if (!audioReady) {
       // Fallback to native volume if context not ready
       if (Number.isFinite(targetVol)) {
@@ -168,9 +203,11 @@ export function Player({ currentSong, isPlaying, setIsPlaying, onNext, onPreviou
 
     const primeMedia = () => {
       initAudio();
-      media.play().then(() => {
-        media.pause();
-      }).catch(() => {});
+      if (media.src && media.src !== window.location.href) {
+        media.play().then(() => {
+          media.pause();
+        }).catch(() => {});
+      }
       window.removeEventListener('click', primeMedia);
       window.removeEventListener('touchstart', primeMedia);
     };
@@ -187,12 +224,18 @@ export function Player({ currentSong, isPlaying, setIsPlaying, onNext, onPreviou
   }, []);
 
   useEffect(() => {
-    if (!currentSong) {
-      setActiveUrl(null);
-      return;
-    }
-
     const resolveUrl = async () => {
+      if (!currentSong) return;
+      
+      if (isYouTube) {
+        // Automatically sanitize and convert to privacy-enhanced no-ad nocookie URL
+        const cleanUrl = getCleanNoAdYouTubeUrl(currentSong.audioUrl);
+        setActiveUrl(cleanUrl);
+        setErrorStatus(null);
+        return;
+      }
+
+      setActiveUrl(null);
       try {
         let finalUrl = currentSong.audioUrl;
         if (finalUrl.startsWith('local://')) {
@@ -222,12 +265,24 @@ export function Player({ currentSong, isPlaying, setIsPlaying, onNext, onPreviou
   }, [currentSong?.id]);
 
   useEffect(() => {
+    if (isYouTube) {
+      if (mediaRef.current) {
+        mediaRef.current.pause();
+      }
+      return; // Sync happens via ReactPlayer props
+    }
+
     const media = mediaRef.current;
     if (!media || !activeUrl) return;
 
     const syncPlayback = async () => {
+      if (!activeUrl) return;
+
       try {
-        if (media.src !== activeUrl) {
+        // Only set src if it actually changed to avoid unnecessary reloads
+        // Chrome sometimes appends a slash or normalizes, so we check if the activeUrl is contained
+        if (!media.src.includes(activeUrl) && media.src !== activeUrl) {
+          console.log("Loading new source:", activeUrl);
           media.pause();
           media.src = activeUrl;
           media.load();
@@ -235,6 +290,10 @@ export function Player({ currentSong, isPlaying, setIsPlaying, onNext, onPreviou
 
         if (isPlaying) {
           if (media.paused) {
+            // Ensure audio context is resumed before playing
+            if (audioContextRef.current?.state === 'suspended') {
+              await audioContextRef.current.resume();
+            }
             await media.play();
           }
         } else {
@@ -245,8 +304,12 @@ export function Player({ currentSong, isPlaying, setIsPlaying, onNext, onPreviou
       } catch (err: any) {
         if (err.name === 'NotAllowedError') {
           setErrorStatus("Clique para tocar");
+        } else if (err.name === 'NotSupportedError') {
+          console.error("Not Supported Source:", activeUrl);
+          setErrorStatus("Formato inválido");
+          toast.error("Este arquivo não pode ser reproduzido.");
         } else if (err.name !== 'AbortError') {
-          console.error("Playback Sync Error:", err);
+          console.error("Playback Sync Error:", err.name, err.message);
           setErrorStatus("Erro no Player");
         }
         setIsPlaying(false);
@@ -311,18 +374,20 @@ export function Player({ currentSong, isPlaying, setIsPlaying, onNext, onPreviou
   };
 
   const handleSeekCommit = (value: number[]) => {
-    if (mediaRef.current && Number.isFinite(duration) && duration > 0) {
-      const newTime = value[0] * duration;
-      if (Number.isFinite(newTime)) {
-        mediaRef.current.currentTime = newTime;
+    const targetTime = value[0] * duration;
+    if (isYouTube) {
+      playerRef.current?.seekTo(value[0], 'fraction');
+    } else if (mediaRef.current && Number.isFinite(duration) && duration > 0) {
+      if (Number.isFinite(targetTime)) {
+        mediaRef.current.currentTime = targetTime;
       }
     }
     setIsSeeking(false);
   };
 
   const handleToggleFullscreen = () => {
-    const video = mediaRef.current;
-    if (!video) return;
+    const container = videoContainerRef.current;
+    if (!container) return;
 
     const doc = document as any;
     if (doc.fullscreenElement || doc.webkitFullscreenElement || doc.mozFullScreenElement || doc.msFullscreenElement) {
@@ -331,7 +396,7 @@ export function Player({ currentSong, isPlaying, setIsPlaying, onNext, onPreviou
       else if (doc.mozCancelFullScreen) doc.mozCancelFullScreen();
       else if (doc.msExitFullscreen) doc.msExitFullscreen();
     } else {
-      const v = video as any;
+      const v = container as any;
       if (v.requestFullscreen) v.requestFullscreen();
       else if (v.webkitRequestFullscreen) v.webkitRequestFullscreen();
       else if (v.webkitEnterFullscreen) v.webkitEnterFullscreen(); // Specific for iOS
@@ -424,42 +489,95 @@ export function Player({ currentSong, isPlaying, setIsPlaying, onNext, onPreviou
         </div>
       </div>
 
-      <div className={cn(
+      {/* Video Container */}
+      <div 
+        ref={videoContainerRef}
+        className={cn(
         "fixed bottom-[164px] right-4 md:bottom-28 md:right-8 w-64 md:w-96 aspect-video bg-black rounded-2xl overflow-hidden shadow-2xl border border-white/10 z-50 transition-all duration-500 group/video",
-        (isVideo && showVideo) ? "scale-100 opacity-100 translate-y-0" : "scale-75 opacity-0 translate-y-20 pointer-events-none"
+        ((isVideo || isYouTube) && showVideo) ? "scale-100 opacity-100 translate-y-0" : "scale-75 opacity-0 translate-y-20 pointer-events-none"
       )}>
-        <video
-          ref={mediaRef}
-          onTimeUpdate={handleTimeUpdate}
-          onLoadedMetadata={handleLoadedMetadata}
-          onEnded={onNext}
-          playsInline
-          webkit-playsinline="true"
-          crossOrigin="anonymous"
-          className="w-full h-full object-contain cursor-pointer"
-          onDoubleClick={handleToggleFullscreen}
-          onClick={() => {
-            if (isPlaying) {
-              mediaRef.current?.pause();
+        {/* Always keep ReactPlayer mounted when it's YouTube to avoid reload issues */}
+        {isYouTube && activeUrl && (
+          <ReactPlayer
+            ref={playerRef}
+            url={activeUrl}
+            playing={isPlaying}
+            volume={volume}
+            muted={isMuted}
+            width="100%"
+            height="100%"
+            onProgress={({ played }: { played: number }) => !isSeeking && setPlayed(played)}
+            onReady={(player) => setDuration(player.getDuration())}
+            onEnded={onNext}
+            config={{
+              youtube: {
+                playerVars: { 
+                  autoplay: 1,
+                  controls: 0,
+                  modestbranding: 1,
+                  rel: 0,
+                  showinfo: 0,
+                  iv_load_policy: 3,
+                  playsinline: 1,
+                  disablekb: 0
+                },
+                embedOptions: {
+                  host: 'https://www.youtube-nocookie.com'
+                }
+              }
+            }}
+            onError={(err) => {
+              console.error("YouTube Error:", err);
+              setErrorStatus("Erro no YouTube");
               setIsPlaying(false);
-            } else {
-              initAudio();
-              mediaRef.current?.play().catch(() => {});
-              setIsPlaying(true);
-            }
-          }}
-          onError={(e) => {
-            const target = e.target as HTMLVideoElement;
-            const errorMsg = target.error?.message || "Erro de formato ou rede";
-            const errorCode = target.error?.code;
-            console.error("Player Error:", errorCode, errorMsg);
-            setErrorStatus(`Erro ${errorCode}`);
-            if (isPlaying) {
-              toast.error(`Erro: ${errorMsg}`);
-            }
-            setIsPlaying(false);
-          }}
-        />
+            }}
+          />
+        )}
+
+        {/* Anti-ad badge for YouTube videos */}
+        {isYouTube && (
+          <div className="absolute top-2 left-2 z-10 flex items-center space-x-1.5 px-2.5 py-1 bg-black/75 backdrop-blur-md rounded-full border border-emerald-500/30 text-emerald-400 pointer-events-none shadow-lg">
+            <ShieldCheck className="w-3 h-3 text-emerald-400" />
+            <span className="text-[10px] font-bold tracking-tight">Sem Anúncios</span>
+          </div>
+        )}
+        
+          {/* Only mount native video for non-YouTube sources */}
+          <video
+            ref={mediaRef}
+            onTimeUpdate={handleTimeUpdate}
+            onLoadedMetadata={handleLoadedMetadata}
+            onEnded={onNext}
+            playsInline
+            webkit-playsinline="true"
+            crossOrigin="anonymous"
+            className={cn(
+              "w-full h-full object-contain cursor-pointer",
+              isYouTube ? "hidden pointer-events-none" : "block"
+            )}
+            onDoubleClick={handleToggleFullscreen}
+            onClick={() => {
+              if (isPlaying) {
+                mediaRef.current?.pause();
+                setIsPlaying(false);
+              } else {
+                initAudio();
+                mediaRef.current?.play().catch(() => {});
+                setIsPlaying(true);
+              }
+            }}
+            onError={(e) => {
+              const target = e.target as HTMLVideoElement;
+              const errorMsg = target.error?.message || "Erro de formato ou rede";
+              const errorCode = target.error?.code;
+              console.error("Player Error:", errorCode, errorMsg);
+              setErrorStatus(`Erro ${errorCode}`);
+              if (isPlaying) {
+                toast.error(`Erro: ${errorMsg}`);
+              }
+              setIsPlaying(false);
+            }}
+          />
         
         {/* Overlay Fullscreen Button */}
         <div className="absolute top-2 right-2 md:opacity-0 md:group-hover/video:opacity-100 transition-opacity flex flex-col space-y-2">
@@ -491,7 +609,7 @@ export function Player({ currentSong, isPlaying, setIsPlaying, onNext, onPreviou
       </div>
 
       {currentSong && (
-        <div className="fixed bottom-[74px] md:relative md:bottom-0 left-0 right-0 flex flex-col z-40">
+        <div id={id} className="fixed bottom-[74px] md:relative md:bottom-0 left-0 right-0 flex flex-col z-40">
           {/* Sound Visualizer - Dedicated Space between list and player */}
           <div className="h-10 md:h-14 bg-black/60 backdrop-blur-xl border-t border-white/5 flex items-center justify-center overflow-hidden relative group/vis">
             <Visualizer 
@@ -684,15 +802,15 @@ export function Player({ currentSong, isPlaying, setIsPlaying, onNext, onPreviou
               >
                 <SlidersHorizontal className="w-5 h-5" />
               </PopoverTrigger>
-              <PopoverContent className="w-[calc(100vw-32px)] md:w-80 bg-zinc-900 border-white/10 p-4 md:p-6 rounded-2xl shadow-2xl" side="top" align="end" sideOffset={20}>
+              <PopoverContent className="w-[calc(100vw-32px)] md:w-[480px] bg-zinc-900 border-white/10 p-4 md:p-6 rounded-2xl shadow-2xl" side="top" align="end" sideOffset={20}>
                 <div className="space-y-6">
                   <div className="flex items-center justify-between">
                     <div>
                       <h4 className="text-white font-bold flex items-center gap-2">
                         <Settings2 className="w-4 h-4 text-blue-500" />
-                        Equalizador
+                        Equalizador Profissional
                       </h4>
-                      <p className="text-[10px] text-zinc-500 uppercase tracking-widest font-bold">Qualidade de Áudio</p>
+                      <p className="text-[10px] text-zinc-500 uppercase tracking-widest font-bold">Resolução de 10 Bandas • Precisão Studio</p>
                     </div>
                     <Button 
                       variant="ghost" 
@@ -707,15 +825,15 @@ export function Player({ currentSong, isPlaying, setIsPlaying, onNext, onPreviou
                     </Button>
                   </div>
                   
-                  <div className="flex justify-between items-end h-48 gap-1 pt-2 px-1">
-                    <div className="flex flex-col items-center w-10 h-full border-r border-white/5 pr-1 shrink-0 group/amp">
+                  <div className="flex justify-between items-end h-56 gap-1 pt-2 px-1">
+                    <div className="flex flex-col items-center w-10 h-full border-r border-white/5 pr-2 shrink-0 group/amp">
                       <span className="text-[9px] font-black text-blue-500 mb-4 uppercase tracking-tighter text-center h-8 flex items-center group-hover/amp:text-blue-400 transition-colors pointer-events-none">Amp</span>
                       <div className="flex-1 w-full flex items-center justify-center relative py-2">
                         <Slider
                           orientation="vertical"
                           value={[preampGain]}
                           min={-12}
-                          max={12}
+                          max={24}
                           step={0.5}
                           onValueChange={(val) => setPreampGain(val[0])}
                           disabled={!isEqEnabled}
@@ -723,46 +841,54 @@ export function Player({ currentSong, isPlaying, setIsPlaying, onNext, onPreviou
                         />
                       </div>
                       <div className="w-full text-center h-5 mt-1 flex items-center justify-center pointer-events-none">
-                        <span className="text-[9px] font-mono text-blue-500 font-bold tabular-nums group-hover/amp:text-blue-400 transition-colors">
+                        <span className={cn(
+                          "text-[9px] font-mono font-bold tabular-nums transition-colors",
+                          preampGain > 0 ? "text-blue-500" : "text-zinc-500"
+                        )}>
                           {preampGain > 0 ? `+${preampGain}` : preampGain}
                         </span>
                       </div>
                     </div>
-
-                    {EQ_FREQUENCIES.map((freq, i) => (
-                      <div key={freq} className="flex flex-col items-center w-8 h-full shrink-0 group/band"> 
-                        <span className="text-[9px] font-black text-zinc-600 h-8 flex items-end justify-center pb-1 group-hover/band:text-zinc-400 transition-colors pointer-events-none">
-                          {freq >= 1000 ? `${freq / 1000}k` : freq}
-                        </span>
-                        <div className="flex-1 w-full flex items-center justify-center relative py-2">
-                          <div className="absolute top-0 bottom-0 left-1/2 w-[1px] bg-white/5 -translate-x-1/2 pointer-events-none" />
-                          <Slider
-                            orientation="vertical"
-                            value={[eqGains[i]]}
-                            min={-12}
-                            max={12}
-                            step={0.5}
-                            onValueChange={(val) => updateEqGain(i, val[0])}
-                            disabled={!isEqEnabled}
-                            className="h-full"
-                          />
-                        </div>
-                        <div className="w-full text-center h-5 mt-1 flex items-center justify-center pointer-events-none">
-                          <span className="text-[9px] font-mono text-zinc-500 tabular-nums group-hover/band:text-white transition-colors">
-                            {eqGains[i] > 0 ? `+${eqGains[i]}` : eqGains[i]}
+ 
+                    <div className="flex flex-1 justify-between gap-1 h-full overflow-x-auto no-scrollbar pb-1">
+                      {EQ_FREQUENCIES.map((freq, i) => (
+                        <div key={freq} className="flex flex-col items-center w-8 h-full shrink-0 group/band"> 
+                          <span className="text-[8px] font-black text-zinc-600 h-8 flex items-end justify-center pb-1 group-hover/band:text-zinc-400 transition-colors pointer-events-none">
+                            {freq >= 1000 ? `${freq / 1000}k` : freq}
                           </span>
+                          <div className="flex-1 w-full flex items-center justify-center relative py-2">
+                            <div className="absolute top-0 bottom-0 left-1/2 w-[1px] bg-white/5 -translate-x-1/2 pointer-events-none" />
+                            <Slider
+                              orientation="vertical"
+                              value={[eqGains[i]]}
+                              min={-12}
+                              max={18}
+                              step={0.5}
+                              onValueChange={(val) => updateEqGain(i, val[0])}
+                              disabled={!isEqEnabled}
+                              className="h-full"
+                            />
+                          </div>
+                          <div className="w-full text-center h-5 mt-1 flex items-center justify-center pointer-events-none">
+                            <span className={cn(
+                              "text-[8px] font-mono tabular-nums transition-colors",
+                              eqGains[i] > 0 ? "text-blue-400" : "text-zinc-500"
+                            )}>
+                              {eqGains[i] > 0 ? `+${eqGains[i].toFixed(1)}` : eqGains[i].toFixed(1)}
+                            </span>
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      ))}
+                    </div>
                   </div>
-
+ 
                   <div className="pt-4 border-t border-white/5 flex gap-2">
                     <Button 
                       variant="ghost" 
                       size="sm" 
                       className="flex-1 text-[10px] font-bold text-zinc-400 hover:text-white uppercase tracking-tighter"
                       onClick={() => {
-                        setEqGains([0, 0, 0, 0, 0, 0, 0]);
+                        setEqGains(new Array(10).fill(0));
                         setPreampGain(0);
                       }}
                     >
@@ -772,9 +898,17 @@ export function Player({ currentSong, isPlaying, setIsPlaying, onNext, onPreviou
                       variant="ghost" 
                       size="sm" 
                       className="flex-1 text-[10px] font-bold text-blue-400 hover:text-blue-300 uppercase tracking-tighter"
-                      onClick={() => setEqGains([6, 4, 0, -2, 2, 4, 6])}
+                      onClick={() => setEqGains([8, 6, 4, 0, -2, -1, 2, 5, 7, 9])}
                     >
                       Reforço V
+                    </Button>
+                    <Button 
+                      variant="ghost" 
+                      size="sm" 
+                      className="flex-1 text-[10px] font-bold text-purple-400 hover:text-purple-300 uppercase tracking-tighter"
+                      onClick={() => setEqGains([12, 10, 5, 0, 0, 0, 0, 0, 0, 0])}
+                    >
+                      Super Bass
                     </Button>
                   </div>
                 </div>

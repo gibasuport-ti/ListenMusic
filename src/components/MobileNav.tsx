@@ -1,21 +1,23 @@
-import { Home, Library, PlusSquare, Heart, User } from 'lucide-react';
+import { Home, Library, PlusSquare, Heart, User, Youtube, Sliders } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 
 interface MobileNavProps {
   activeTab: string;
   setActiveTab: (tab: string) => void;
+  id?: string;
 }
 
-export function MobileNav({ activeTab, setActiveTab }: MobileNavProps) {
+export function MobileNav({ activeTab, setActiveTab, id }: MobileNavProps) {
   const navItems = [
     { id: 'home', icon: Home, label: 'Início' },
     { id: 'library', icon: Library, label: 'Biblioteca' },
+    { id: 'mixer', icon: Sliders, label: 'Mixer' },
+    { id: 'youtube', icon: Youtube, label: 'YouTube' },
     { id: 'upload', icon: PlusSquare, label: 'Upload' },
-    { id: 'liked', icon: Heart, label: 'Curtidas' },
   ];
 
   return (
-    <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-black/80 backdrop-blur-2xl border-t border-white/5 px-4 pb-8 pt-3 z-50 flex items-center justify-around">
+    <nav id={id} className="md:hidden fixed bottom-0 left-0 right-0 bg-black/80 backdrop-blur-2xl border-t border-white/5 px-4 pb-8 pt-3 z-50 flex items-center justify-around">
       {navItems.map((item) => (
         <button
           key={item.id}

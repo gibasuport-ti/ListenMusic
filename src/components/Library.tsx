@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
-import { Play, MoreHorizontal, Clock, Music2, ListMusic, Trash2, AlertCircle, CheckCircle2, Video, Music as MusicIcon, Search, Image as ImageIcon, Filter, X, Upload as UploadIcon } from 'lucide-react';
+import { Play, MoreHorizontal, Clock, Music2, ListMusic, Trash2, AlertCircle, CheckCircle2, Video, Music as MusicIcon, Search, Image as ImageIcon, Filter, X, Upload as UploadIcon, HardDrive, Download, Loader2, ShieldCheck } from 'lucide-react';
 import { db, handleFirestoreError, OperationType } from '@/src/lib/firebase';
 import { collection, query, where, onSnapshot, orderBy, deleteDoc, doc } from 'firebase/firestore';
-import { deleteAudioLocal, deleteMediaLocal, existsAudioLocal, getAllMetadataLocal, saveMetadataLocal, getAllStorageKeys, saveMediaLocal } from '@/src/lib/localDb';
+import { deleteAudioLocal, deleteMediaLocal, existsAudioLocal, getAllMetadataLocal, saveMetadataLocal, getAllStorageKeys, saveMediaLocal, getMediaLocal } from '@/src/lib/localDb';
+import JSZip from 'jszip';
 import { useAuth } from '@/src/hooks/useAuth';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
@@ -16,6 +17,7 @@ interface Song {
   audioUrl: string;
   album?: string;
   uploadedBy: string;
+  source?: 'local' | 'youtube';
   type?: 'audio' | 'video';
   createdAt?: number;
 }
@@ -28,6 +30,148 @@ export function Library({ onPlay, currentSong }: { onPlay: (song: any) => void, 
   const [editingSongId, setEditingSongId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { user } = useAuth();
+
+  const [showBackup, setShowBackup] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [backupProgress, setBackupProgress] = useState(0);
+  const [backupStatus, setBackupStatus] = useState('');
+
+  const handleExportBackup = async () => {
+    if (songs.length === 0) {
+      toast.error("Você não tem nenhuma música ou vídeo na biblioteca para exportar.");
+      return;
+    }
+
+    setExporting(true);
+    setBackupProgress(0);
+    setBackupStatus("Preparando exportação...");
+
+    try {
+      const zip = new JSZip();
+
+      // 1. Save all metadata
+      const localSongs = await getAllMetadataLocal();
+      zip.file('metadata.json', JSON.stringify(localSongs, null, 2));
+
+      // 2. Add all local files
+      const storageKeys = await getAllStorageKeys();
+      const filesFolder = zip.folder('files');
+
+      if (filesFolder) {
+        for (let i = 0; i < storageKeys.length; i++) {
+          const key = storageKeys[i];
+          setBackupStatus(`Buscando arquivo ${i + 1} de ${storageKeys.length}...`);
+          try {
+            const blob = await getMediaLocal(key);
+            if (blob) {
+              filesFolder.file(key, blob);
+            }
+          } catch (err) {
+            console.warn(`Erro ao buscar arquivo local ${key}:`, err);
+          }
+          setBackupProgress(((i + 1) / storageKeys.length) * 50); // Use first 50% for loading files
+        }
+      }
+
+      setBackupStatus("Gerando arquivo compactado (ZIP)...");
+      const zipBlob = await zip.generateAsync({ type: 'blob' }, (metadata) => {
+        if (metadata.currentFile) {
+          setBackupStatus(`Compactando: ${metadata.currentFile.split('/').pop()}`);
+        }
+        // Offset progress in the second half (50% to 100%)
+        setBackupProgress(50 + (metadata.percent / 2));
+      });
+
+      setBackupStatus("Iniciando download...");
+      const url = URL.createObjectURL(zipBlob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `backup_listenmusic_${new Date().toISOString().split('T')[0]}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      toast.success("Backup exportado com sucesso!");
+    } catch (err: any) {
+      console.error("Erro ao exportar backup:", err);
+      toast.error(`Falha ao exportar backup: ${err.message || 'Erro desconhecido'}`);
+    } finally {
+      setExporting(false);
+      setBackupStatus('');
+      setBackupProgress(0);
+    }
+  };
+
+  const handleImportBackup = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setImporting(true);
+    setBackupProgress(0);
+    setBackupStatus('Lendo arquivo de backup...');
+
+    try {
+      const zip = await JSZip.loadAsync(file);
+      
+      // 1. Read metadata
+      const metadataFile = zip.file('metadata.json');
+      if (!metadataFile) {
+        throw new Error("Arquivo de backup inválido: metadata.json não encontrado.");
+      }
+      const metadataText = await metadataFile.async('string');
+      const importMetadata = JSON.parse(metadataText);
+
+      if (!Array.isArray(importMetadata)) {
+        throw new Error("Formato de backup corrompido.");
+      }
+
+      // 2. Read storing folder
+      const filesFolder = zip.folder('files');
+      const zipFiles = filesFolder ? Object.entries(filesFolder.files).filter(([_, entry]) => !entry.dir) : [];
+
+      const totalSteps = importMetadata.length + zipFiles.length;
+      let completedSteps = 0;
+
+      // Save metadata
+      for (let i = 0; i < importMetadata.length; i++) {
+        const meta = importMetadata[i];
+        setBackupStatus(`Importando metadados (${i + 1}/${importMetadata.length})...`);
+        await saveMetadataLocal(meta);
+        completedSteps++;
+        setBackupProgress((completedSteps / totalSteps) * 100);
+      }
+
+      // Save files
+      if (filesFolder) {
+        let fileIdx = 0;
+        for (const [relativePath, zipEntry] of zipFiles) {
+          setBackupStatus(`Restaurando arquivos de áudio (${fileIdx + 1}/${zipFiles.length})...`);
+          const key = zipEntry.name.split('/').pop();
+          if (key) {
+            const fileBlob = await zipEntry.async('blob');
+            await saveMediaLocal(key, fileBlob);
+          }
+          fileIdx++;
+          completedSteps++;
+          setBackupProgress((completedSteps / totalSteps) * 100);
+        }
+      }
+
+      toast.success("Backup restaurado e biblioteca atualizada!");
+      loadSongs();
+      window.dispatchEvent(new CustomEvent('songs-updated'));
+    } catch (err: any) {
+      console.error("Erro ao importar backup:", err);
+      toast.error(`Falha ao restaurar: ${err.message || 'Houve um erro'}`);
+    } finally {
+      setImporting(false);
+      setBackupStatus('');
+      setBackupProgress(0);
+      if (event.target) event.target.value = '';
+    }
+  };
 
   const loadSongs = async () => {
     try {
@@ -168,14 +312,25 @@ export function Library({ onPlay, currentSong }: { onPlay: (song: any) => void, 
 
   const handleDelete = async (song: Song) => {
     try {
+      // 1. Delete the media itself if it's local
       if (song.audioUrl && song.audioUrl.startsWith('local://')) {
-        const localId = song.audioUrl.replace('local://', '');
-        await deleteMediaLocal(localId);
+        const mediaId = song.audioUrl.replace('local://', '');
+        await deleteMediaLocal(mediaId);
       }
       
-      toast.success("Música removida com sucesso.");
+      // 2. ALWAYS delete the metadata by song.id
+      // In deleteMediaLocal, it already deletes from METADATA_STORE using the passed ID.
+      // But if song.id is different from mediaId, we need to be careful.
+      // In this app, localId is used as song.id during upload.
+      await deleteMediaLocal(song.id);
+      
+      toast.success("Item removido com sucesso.");
       setDeletingId(null);
-      // Trigger update event
+      
+      // 3. Immediately refresh local state
+      loadSongs();
+      
+      // Trigger update event for other components
       window.dispatchEvent(new CustomEvent('songs-updated'));
     } catch (error: any) {
       console.error("Erro ao deletar:", error);
@@ -241,26 +396,120 @@ export function Library({ onPlay, currentSong }: { onPlay: (song: any) => void, 
           </div>
         </header>
 
-        <div className="mb-8 relative group max-w-md">
-        <div className="absolute inset-y-0 left-4 flex items-center pointer-events-none">
-          <Search className="w-5 h-5 text-zinc-500 group-focus-within:text-blue-400 transition-colors" />
+        <div className="mb-8 flex flex-col md:flex-row gap-4 items-stretch md:items-center justify-between">
+          <div className="relative group max-w-md flex-1">
+            <div className="absolute inset-y-0 left-4 flex items-center pointer-events-none">
+              <Search className="w-5 h-5 text-zinc-500 group-focus-within:text-blue-400 transition-colors" />
+            </div>
+            <input 
+              type="text"
+              placeholder="Buscar na sua biblioteca..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full bg-white/5 border border-white/5 rounded-2xl py-3 pl-12 pr-4 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:bg-white/10 transition-all"
+            />
+            {searchQuery && (
+              <button 
+                onClick={() => setSearchQuery('')}
+                className="absolute inset-y-0 right-4 flex items-center text-zinc-500 hover:text-white transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setShowBackup(!showBackup)}
+              className="bg-white/5 hover:bg-white/10 text-white rounded-2xl px-5 py-3 border border-white/5 flex items-center justify-center gap-2 text-sm font-semibold transition-all active:scale-95 cursor-pointer"
+            >
+              <HardDrive className="w-4 h-4 text-blue-400" />
+              Backup & Restaurar
+            </button>
+          </div>
         </div>
-        <input 
-          type="text"
-          placeholder="Buscar na sua biblioteca..."
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          className="w-full bg-white/5 border border-white/5 rounded-2xl py-3 pl-12 pr-4 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:bg-white/10 transition-all"
-        />
-        {searchQuery && (
-          <button 
-            onClick={() => setSearchQuery('')}
-            className="absolute inset-y-0 right-4 flex items-center text-zinc-500 hover:text-white transition-colors"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        )}
-      </div>
+
+        <AnimatePresence>
+          {showBackup && (
+            <motion.div
+              initial={{ opacity: 0, height: 0, marginBottom: 0 }}
+              animate={{ opacity: 1, height: 'auto', marginBottom: 24 }}
+              exit={{ opacity: 0, height: 0, marginBottom: 0 }}
+              className="overflow-hidden"
+            >
+              <div className="bg-gradient-to-r from-blue-900/10 to-purple-900/10 border border-blue-500/10 rounded-2xl p-6 relative">
+                <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
+                  <div className="space-y-2">
+                    <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                      <HardDrive className="w-5 h-5 text-blue-500" />
+                      Backup & Restauração Local
+                    </h3>
+                    <p className="text-xs text-zinc-400 max-w-xl leading-relaxed">
+                      Exporte sua biblioteca de músicas e artes de capa como um arquivo ZIP para salvar no computador e depois restaurar no seu celular ou em outro navegador.
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
+                    <button
+                      disabled={exporting || importing}
+                      onClick={handleExportBackup}
+                      className="flex-1 md:flex-initial bg-blue-600 hover:bg-blue-700 disabled:bg-blue-600/50 text-white rounded-xl font-bold px-5 py-3 text-sm flex items-center justify-center gap-2 transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
+                    >
+                      {exporting ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          Exportando ({backupProgress.toFixed(0)}%)
+                        </>
+                      ) : (
+                        <>
+                          <Download className="w-4 h-4" />
+                          Exportar Músicas
+                        </>
+                      )}
+                    </button>
+
+                    <label className={`flex-1 md:flex-initial text-center bg-white/5 hover:bg-white/10 text-white rounded-xl font-bold px-5 py-3 border border-white/10 text-sm flex items-center justify-center gap-2 transition-all active:scale-95 cursor-pointer ${importing || exporting ? 'opacity-50 pointer-events-none' : ''}`}>
+                      {importing ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          Restaurando ({backupProgress.toFixed(0)}%)
+                        </>
+                      ) : (
+                        <>
+                          <UploadIcon className="w-4 h-4 text-emerald-400" />
+                          Importar Backup (.zip)
+                        </>
+                      )}
+                      <input
+                        type="file"
+                        accept=".zip"
+                        className="hidden"
+                        onChange={handleImportBackup}
+                        disabled={exporting || importing}
+                      />
+                    </label>
+                  </div>
+                </div>
+
+                {/* Progress feedback bar */}
+                {(exporting || importing) && (
+                  <div className="mt-4 p-3 bg-white/5 rounded-xl border border-white/5 space-y-2">
+                    <div className="flex justify-between text-[11px] font-bold text-zinc-400">
+                      <span>{backupStatus}</span>
+                      <span>{backupProgress.toFixed(0)}%</span>
+                    </div>
+                    <div className="h-1 bg-white/5 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-blue-500 shadow-[0_0_10px_#3b82f6] transition-all duration-300"
+                        style={{ width: `${backupProgress}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
       {/* Hidden File Input for Custom Covers */}
       <input 
@@ -347,7 +596,12 @@ export function Library({ onPlay, currentSong }: { onPlay: (song: any) => void, 
                     
                     <div className="flex items-center justify-end pr-1 md:pr-4 min-w-[48px]" onClick={(e) => e.stopPropagation()}>
                       <div className="hidden md:flex items-center space-x-1 mr-4">
-                        {missingFiles[song.id] ? (
+                        {song.source === 'youtube' ? (
+                          <div className="flex items-center space-x-1 px-2 py-0.5 bg-emerald-500/10 border border-emerald-500/20 rounded-full">
+                            <ShieldCheck className="w-3 h-3 text-emerald-400" />
+                            <span className="text-[10px] font-bold text-emerald-400">Sem Anúncios</span>
+                          </div>
+                        ) : missingFiles[song.id] ? (
                           <>
                             <span className="text-red-500 text-[10px] font-bold uppercase tracking-tighter">Não Encontrado</span>
                           </>

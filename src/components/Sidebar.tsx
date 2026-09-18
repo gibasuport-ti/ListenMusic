@@ -1,4 +1,4 @@
-import { Home, Library, PlusSquare, Heart, LogOut, Music, Crown } from 'lucide-react';
+import { Home, Library, PlusSquare, Heart, LogOut, Music, Crown, Youtube, Sliders } from 'lucide-react';
 import { useAuth } from '@/src/hooks/useAuth';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/src/lib/utils';
@@ -9,21 +9,24 @@ interface SidebarProps {
   activeTab: string;
   setActiveTab: (tab: string) => void;
   className?: string;
+  id?: string;
 }
 
-export function Sidebar({ activeTab, setActiveTab, className }: SidebarProps) {
+export function Sidebar({ activeTab, setActiveTab, className, id }: SidebarProps) {
   const { logout, user, isPremium } = useAuth();
   const [isPremiumModalOpen, setIsPremiumModalOpen] = useState(false);
 
   const navItems = [
     { id: 'home', icon: Home, label: 'Início' },
     { id: 'library', icon: Library, label: 'Biblioteca' },
+    { id: 'mixer', icon: Sliders, label: 'Mixer DJ' },
+    { id: 'youtube', icon: Youtube, label: 'YouTube' },
     { id: 'upload', icon: PlusSquare, label: 'Upload' },
     { id: 'liked', icon: Heart, label: 'Curtidas' },
   ];
 
   return (
-    <aside className={cn("w-64 bg-black/40 backdrop-blur-xl border-r border-white/5 flex flex-col h-full", className)}>
+    <aside id={id} className={cn("w-64 bg-black/40 backdrop-blur-xl border-r border-white/5 flex flex-col h-full", className)}>
       <div className="p-6">
         <div className="flex items-center space-x-3 mb-10 px-2">
           <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center shadow-lg shadow-blue-600/20">
